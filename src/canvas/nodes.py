@@ -4,9 +4,6 @@ import torchvision
 from PIL import Image
 import os
 import numpy as np
-import random
-
-import torchvision.transforms.functional
 
 CACHE_PATH = "./custom_nodes/canvas/cache/"
 PREV_GENERATED_IMAGE = "prev_generated_image"
@@ -291,15 +288,45 @@ class CanvasCacheUpdater:
         # Save the new image
         pil_image.save(os.path.join(CACHE_PATH, f"{PREV_GENERATED_IMAGE}_1.png"))
         return ()
+    
+class CanvasSelector:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "input_canvas_image": (
+                    "IMAGE",
+                    {},
+                ),
+                "selector_mask": (
+                    "MASK",
+                    {},
+                ),
+            }
+        }
+    
+    RETURN_TYPES = ("IMAGE","MASK","CONTEXT")
+    RETURN_NAMES = ("selection","selection_mask","canvas_context")
+    OUTPUT_NODE = True
+    CATEGORY = "CanvasNodes"
+    FUNCTION = "execute"
+
+    def execute(self, input_canvas_image: torch.Tensor, selector_mask: torch.Tensor):
+        return (input_canvas_image,selector_mask)
 
 
 # A dictionary that contains all nodes you want to export with their names
 # NOTE: names should be globally unique
 NODE_CLASS_MAPPINGS = {"Example": Example,
                        "CanvasLoader": CanvasLoader,
-                       "CanvasCacheUpdater": CanvasCacheUpdater}
+                       "CanvasCacheUpdater": CanvasCacheUpdater,
+                       "CanvasSelector": CanvasSelector}
 
 # A dictionary that contains the friendly/humanly readable titles for the nodes
 NODE_DISPLAY_NAME_MAPPINGS = {"Example": "Example Node",
                              "CanvasLoader": "Canvas Loader",
-                             "CanvasCacheUpdater": "Canvas Cache Updater"}
+                             "CanvasCacheUpdater": "Canvas Cache Updater",
+                             "CanvasSelector": "Canvas Selector"}
