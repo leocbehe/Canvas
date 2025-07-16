@@ -4,6 +4,7 @@ import torchvision
 from PIL import Image
 import os
 import numpy as np
+import random
 
 import torchvision.transforms.functional
 
@@ -135,10 +136,12 @@ class CanvasLoader:
     A class that either loads an existing image from a path or creates a new one based on the given parameters.
     """
 
-    
-
     def __init__(self):
-        pass
+        self.GENERATION_SEED = 0
+        self.prev_use_existing = False
+        self.prev_image_width = 1024
+        self.prev_image_height = 1024
+        self.prev_fill_img_with = "white"
 
     @classmethod
     def INPUT_TYPES(s):
@@ -171,14 +174,17 @@ class CanvasLoader:
                         "display": "number",
                     },
                 ),
-                "fill_img_with": (["white", "black", "random"],),
+                "fill_img_with": (
+                    ["white", "black", "random"],
+                    {
+                        "default": "white"
+                    },
+                ),
             }
         }
 
     
     def execute(self, use_existing, image_width, image_height, fill_img_with):
-        print(f"execute canvas loader")
-
         if not os.path.exists(CACHE_PATH):
             os.makedirs(CACHE_PATH)
         cached_image_path = os.path.join(CACHE_PATH, f"{PREV_GENERATED_IMAGE}_1.png")
@@ -186,10 +192,28 @@ class CanvasLoader:
         if use_existing:
             if os.path.exists(cached_image_path):
                 image = torchvision.io.decode_image(cached_image_path)
+                image = image.permute(1, 2, 0)
+                image = image.unsqueeze(0)
         else:
             image = torch.Tensor(torch.empty((1, image_height, image_width, 3), dtype=torch.float16))
+            # fill image with the specified value
+            if fill_img_with == "white":
+                image.fill_(1.0)
+            elif fill_img_with == "black":
+                image.fill_(0.0)
+            elif fill_img_with == "random":
+                image = torch.rand((1, image_height, image_width, 3))
+
+        self.prev_use_existing = use_existing
+        self.prev_image_width = image_width
+        self.prev_image_height = image_height
+        self.prev_fill_img_with = fill_img_with
 
         return (image,)
+    
+    # @classmethod
+    # def IS_CHANGED(s, use_existing, image_width, image_height, fill_img_with):
+    #     pass
     
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("canvas_image",)
@@ -233,10 +257,11 @@ class CanvasCacheUpdater:
     FUNCTION = "execute"
 
     def execute(self, cache_image: torch.Tensor, caching_enabled: bool):
-
+        print("execute canvas cache updater")
         if not caching_enabled:
-            return
+            return ()
 
+        print("caching enabled")
         # We assume batch_size is 1 for a single image conversion.
         if cache_image.dim() == 4:
             # Squeeze the batch dimension if it's 1
