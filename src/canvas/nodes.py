@@ -3,6 +3,12 @@ import torch
 import torchvision
 from PIL import Image
 import os
+import numpy as np
+
+import torchvision.transforms.functional
+
+CACHE_PATH = "./custom_nodes/canvas/cache/"
+PREV_GENERATED_IMAGE = "prev_generated_image"
 
 class Example:
     """
@@ -129,8 +135,7 @@ class CanvasLoader:
     A class that either loads an existing image from a path or creates a new one based on the given parameters.
     """
 
-    CACHE_PATH = "./cache/"
-    LAST_GENERATED_IMAGE = "last_generated_image.png"
+    
 
     def __init__(self):
         pass
@@ -169,9 +174,14 @@ class CanvasLoader:
                 "fill_img_with": (["white", "black", "random"],),
             }
         }
+
     
     def execute(self, use_existing, image_width, image_height, fill_img_with):
-        cached_image_path = os.path.join(self.CACHE_PATH, self.LAST_GENERATED_IMAGE)
+        print(f"execute canvas loader")
+
+        if not os.path.exists(CACHE_PATH):
+            os.makedirs(CACHE_PATH)
+        cached_image_path = os.path.join(CACHE_PATH, f"{PREV_GENERATED_IMAGE}_1.png")
 
         if use_existing:
             if os.path.exists(cached_image_path):
@@ -191,12 +201,80 @@ class CanvasLoader:
 
     CATEGORY = "CanvasNodes"
 
+class CanvasCacheUpdater:
+    """
+    A node that updates the cache with the generated image.
+    """
+
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "cache_image": (
+                    "IMAGE",
+                    {},
+                ),
+                "caching_enabled": (
+                    "BOOLEAN",
+                    {
+                        "default": True,
+                    },
+                ),
+            }
+        }
+    
+    RETURN_TYPES = ()
+    RETURN_NAMES = ()
+    OUTPUT_NODE = True
+    CATEGORY = "CanvasNodes"
+    FUNCTION = "execute"
+
+    def execute(self, cache_image: torch.Tensor, caching_enabled: bool):
+
+        if not caching_enabled:
+            return
+
+        # We assume batch_size is 1 for a single image conversion.
+        if cache_image.dim() == 4:
+            # Squeeze the batch dimension if it's 1
+            if cache_image.shape[0] == 1:
+                cache_image = cache_image.squeeze(0)
+            else:
+                raise ValueError("Batch size greater than 1 is not supported for single image conversion.")
+
+        # Convert float values (0-1) to uint8 (0-255)
+        image_np = (cache_image * 255).byte().cpu().numpy()
+
+        # Create a PIL Image object
+        pil_image = Image.fromarray(image_np)
+
+        if os.path.exists(os.path.join(CACHE_PATH, f"{PREV_GENERATED_IMAGE}_5.png")):
+            # Delete the oldest image
+            os.remove(os.path.join(CACHE_PATH, f"{PREV_GENERATED_IMAGE}_5.png"))
+
+        # shift all other images back one place
+        for i in range(4, 0, -1):
+            if os.path.exists(os.path.join(CACHE_PATH, f"{PREV_GENERATED_IMAGE}_{i}.png")):
+                os.rename(
+                    os.path.join(CACHE_PATH, f"{PREV_GENERATED_IMAGE}_{i}.png"),
+                    os.path.join(CACHE_PATH, f"{PREV_GENERATED_IMAGE}_{i + 1}.png"),
+                )
+
+        # Save the new image
+        pil_image.save(os.path.join(CACHE_PATH, f"{PREV_GENERATED_IMAGE}_1.png"))
+        return ()
+
 
 # A dictionary that contains all nodes you want to export with their names
 # NOTE: names should be globally unique
 NODE_CLASS_MAPPINGS = {"Example": Example,
-                       "CanvasLoader": CanvasLoader}
+                       "CanvasLoader": CanvasLoader,
+                       "CanvasCacheUpdater": CanvasCacheUpdater}
 
 # A dictionary that contains the friendly/humanly readable titles for the nodes
 NODE_DISPLAY_NAME_MAPPINGS = {"Example": "Example Node",
-                             "CanvasLoader": "Canvas Loader"}
+                             "CanvasLoader": "Canvas Loader",
+                             "CanvasCacheUpdater": "Canvas Cache Updater"}
