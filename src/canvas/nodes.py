@@ -316,6 +316,34 @@ class CanvasSelector:
 
     def execute(self, input_canvas_image: torch.Tensor, selector_mask: torch.Tensor):
         return (input_canvas_image,selector_mask)
+    
+class CanvasMerger:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "canvas_selection": (
+                    "IMAGE",
+                    {},
+                ),
+                "canvas_context": (
+                    "CONTEXT",
+                    {"forceInput": True},
+                ),
+            }
+        }
+    
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("merged_image",)
+    OUTPUT_NODE = True
+    CATEGORY = "CanvasNodes"
+    FUNCTION = "execute"
+
+    def execute(self, canvas_selection: torch.Tensor, canvas_context):
+        return (canvas_selection,)
 
 
 # A dictionary that contains all nodes you want to export with their names
@@ -323,10 +351,12 @@ class CanvasSelector:
 NODE_CLASS_MAPPINGS = {"Example": Example,
                        "CanvasLoader": CanvasLoader,
                        "CanvasCacheUpdater": CanvasCacheUpdater,
-                       "CanvasSelector": CanvasSelector}
+                       "CanvasSelector": CanvasSelector,
+                       "CanvasMerger": CanvasMerger}
 
 # A dictionary that contains the friendly/humanly readable titles for the nodes
 NODE_DISPLAY_NAME_MAPPINGS = {"Example": "Example Node",
                              "CanvasLoader": "Canvas Loader",
                              "CanvasCacheUpdater": "Canvas Cache Updater",
-                             "CanvasSelector": "Canvas Selector"}
+                             "CanvasSelector": "Canvas Selector",
+                             "CanvasMerger": "Canvas Merger"}
