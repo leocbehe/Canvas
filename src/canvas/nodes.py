@@ -1,10 +1,11 @@
 from inspect import cleandoc
 import torch
 import torch.nn.functional as F
-import torchvision
+from torchvision import transforms
 from PIL import Image
 import os
 import numpy as np
+import hashlib
 
 CACHE_PATH = "./custom_nodes/canvas/cache/"
 PREV_GENERATED_IMAGE = "prev_generated_image"
@@ -210,9 +211,19 @@ class CanvasLoader:
 
         return (image,)
     
-    # @classmethod
-    # def IS_CHANGED(s, use_existing, image_width, image_height, fill_img_with):
-    #     pass
+    @classmethod
+    def IS_CHANGED(s, use_existing, image_width, image_height, fill_img_with):
+        # generate a hash of the image contents of prev_generated_image_1.png
+        cached_image_path = os.path.join(CACHE_PATH, f"{PREV_GENERATED_IMAGE}_1.png")
+        if os.path.exists(cached_image_path):
+            with open(cached_image_path, "rb") as f:
+                image_hash = hashlib.sha256(f.read()).hexdigest()
+        else:
+            image_hash = None
+
+        prev_params = (image_hash, use_existing, image_width, image_height, fill_img_with)
+        return prev_params
+    
     
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("canvas_image",)
@@ -362,6 +373,11 @@ class CanvasSelector:
         left_pad = pixel_padding if xmin - pixel_padding >= 0 else xmin
         bottom_pad = pixel_padding if ymax + pixel_padding <= input_canvas_image.shape[1] else input_canvas_image.shape[1] - ymax
         right_pad = pixel_padding if xmax + pixel_padding <= input_canvas_image.shape[2] else input_canvas_image.shape[2] - xmax
+
+        xmin_padded = xmin - left_pad
+        ymin_padded = ymin - top_pad
+        xmax_padded = xmax + right_pad
+        ymax_padded = ymax + bottom_pad
         
         # extract the selection from the image
         selection = input_canvas_image[0, (ymin-top_pad):(ymax+bottom_pad), (xmin-left_pad):(xmax+right_pad), :] 
@@ -388,7 +404,7 @@ class CanvasSelector:
         selection = selection.permute(0, 2, 3, 1)
         selection_mask = selection_mask.squeeze(0)
         print(f"returning selection shape: {selection.shape}, selection_mask shape: {selection_mask.shape}")
-        return (selection,selection_mask,(input_canvas_image, {"top_left": (xmin, ymin), "bottom_right": (xmax, ymax)}))
+        return (selection,selection_mask,(input_canvas_image, {"top_left": (xmin_padded, ymin_padded), "bottom_right": (xmax_padded, ymax_padded)}))
     
 class CanvasMerger:
     def __init__(self):
@@ -416,7 +432,33 @@ class CanvasMerger:
     FUNCTION = "execute"
 
     def execute(self, canvas_selection: torch.Tensor, canvas_context):
-        return (canvas_selection,)
+        # canvas_context is a tuple that contains the canvas image as the first element and a dictionary containing the top_left and bottom_right coordinates as the second element
+        # unpack canvas_context
+        canvas_image, bbox_dict = canvas_context
+        top_left_x, top_left_y = bbox_dict["top_left"]
+        bottom_right_x, bottom_right_y = bbox_dict["bottom_right"]
+
+        # define the width and height of the bounding box
+        width = bottom_right_x - top_left_x
+        height = bottom_right_y - top_left_y
+
+        # define the transform for the resizing of the selection
+        resize_transform = transforms.Resize((height, width), interpolation=transforms.InterpolationMode.BILINEAR)
+
+        # transform the selection shape from (B, H, W, C) to (B, C, H, W)
+        canvas_selection = canvas_selection.permute(0, 3, 1, 2)
+
+        # resize the selection
+        print(f"resizing selection to {height}x{width}")
+        canvas_selection = resize_transform(canvas_selection)
+
+        # transform selection shape back to (B, H, W, C)
+        canvas_selection = canvas_selection.permute(0, 2, 3, 1)
+
+        # paste the selection onto the canvas image
+        canvas_image[0, top_left_y:bottom_right_y, top_left_x:bottom_right_x, :] = canvas_selection
+
+        return (canvas_image,)
 
 
 # A dictionary that contains all nodes you want to export with their names
