@@ -1,5 +1,6 @@
 from inspect import cleandoc
 import torch
+import torch.nn.functional as F
 import torchvision
 from PIL import Image
 import os
@@ -188,8 +189,9 @@ class CanvasLoader:
 
         if use_existing:
             if os.path.exists(cached_image_path):
-                image = torchvision.io.decode_image(cached_image_path)
-                image = image.permute(1, 2, 0)
+                # open image as a PIL Image object and convert it to a PyTorch tensor
+                image = Image.open(cached_image_path).convert("RGB")
+                image = torch.from_numpy(np.array(image)).float() / 255.0
                 image = image.unsqueeze(0)
         else:
             image = torch.Tensor(torch.empty((1, image_height, image_width, 3), dtype=torch.float16))
@@ -305,6 +307,24 @@ class CanvasSelector:
                     "MASK",
                     {},
                 ),
+                "scale_factor": (
+                    "FLOAT",
+                    {
+                        "default": 1.0,
+                        "min": 0.1,
+                        "max": 4.0,
+                        "step": 0.05,
+                    },
+                ),
+                "pixel_padding": (
+                    "INT",
+                    {
+                        "default": 128,
+                        "min": 0,
+                        "max": 1024,
+                        "step": 8,
+                    },
+                ),
             }
         }
     
@@ -314,8 +334,61 @@ class CanvasSelector:
     CATEGORY = "CanvasNodes"
     FUNCTION = "execute"
 
-    def execute(self, input_canvas_image: torch.Tensor, selector_mask: torch.Tensor):
-        return (input_canvas_image,selector_mask)
+    def execute(self, scale_factor, pixel_padding,input_canvas_image: torch.Tensor, selector_mask: torch.Tensor):
+        # input_canvas_image is (B, H, W, C), selector_mask is either (H, W) or (B, H, W)
+        print(f"input_canvas_image shape: {input_canvas_image.shape}, selector_mask shape: {selector_mask.shape}")
+
+        # create selector bounding box
+        nonzero = torch.nonzero(selector_mask, as_tuple=True)
+        if nonzero[0].numel() == 0 or selector_mask.ndim != 3:
+            # Handle empty mask case by creating a mask of the entire image with the shape (1, H, W)
+            print("Mask is empty, setting selector mask to entire image...")
+            selector_mask = torch.ones(1, input_canvas_image.shape[1], input_canvas_image.shape[2])
+            ymin = 0
+            xmin = 0
+            ymax = selector_mask.shape[1]
+            xmax = selector_mask.shape[2]
+        else:
+            # Extract min/max row and column indices
+            ymin = torch.min(nonzero[1])  # Corrected: Use nonzero[1] for height (row)
+            ymax = torch.max(nonzero[1])  # Corrected: Use nonzero[1] for height (row)
+            xmin = torch.min(nonzero[2])  # Corrected: Use nonzero[2] for width (column)
+            xmax = torch.max(nonzero[2])  # Corrected: Use nonzero[2] for width (column)
+
+        print(f"bbox top left is ({xmin}, {ymin}) and bottom right is ({xmax}, {ymax})")
+
+        # if necessary, shrink the padding for each side to make sure it doesn't go out of bounds
+        top_pad = pixel_padding if ymin - pixel_padding >= 0 else ymin
+        left_pad = pixel_padding if xmin - pixel_padding >= 0 else xmin
+        bottom_pad = pixel_padding if ymax + pixel_padding <= input_canvas_image.shape[1] else input_canvas_image.shape[1] - ymax
+        right_pad = pixel_padding if xmax + pixel_padding <= input_canvas_image.shape[2] else input_canvas_image.shape[2] - xmax
+        
+        # extract the selection from the image
+        selection = input_canvas_image[0, (ymin-top_pad):(ymax+bottom_pad), (xmin-left_pad):(xmax+right_pad), :] 
+        selection_mask = selector_mask[0, (ymin-top_pad):(ymax+bottom_pad), (xmin-left_pad):(xmax+right_pad)]
+
+        # the selection and selection_mask should now have the shapes (H, W, C) and (H, W) respectively
+        print(f"selection shape: {selection.shape}, selection_mask shape: {selection_mask.shape}")
+
+        # interpolate function requires input to be (B, C, H, W), so we rearrange the tensors A G A I N
+        selection = selection.permute(2, 0, 1)
+        selection = selection.unsqueeze(0)
+        selection_mask = selection_mask.unsqueeze(0).unsqueeze(0)
+
+        # the selection and selection_mask should now have the shapes (1, C, H, W) and (1, 1, H, W) respectively
+        print(f"before interpolation: selection shape: {selection.shape}, selection_mask shape: {selection_mask.shape}")
+        
+
+        # scale the selection based on scale_factor
+        selection = F.interpolate(selection, scale_factor=scale_factor, mode='bilinear', align_corners=False)
+        selection_mask = F.interpolate(selection_mask, scale_factor=scale_factor, mode='nearest')
+        print(f"after interpolation: selection shape: {selection.shape}, selection_mask shape: {selection_mask.shape}")
+
+        # finally, you guessed it, shuffle back to (B, H, W, C) for the image and (H, W) for the mask
+        selection = selection.permute(0, 2, 3, 1)
+        selection_mask = selection_mask.squeeze(0)
+        print(f"returning selection shape: {selection.shape}, selection_mask shape: {selection_mask.shape}")
+        return (selection,selection_mask,(input_canvas_image, {"top_left": (xmin, ymin), "bottom_right": (xmax, ymax)}))
     
 class CanvasMerger:
     def __init__(self):
