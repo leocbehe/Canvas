@@ -417,10 +417,11 @@ class CanvasSelector:
         print(f"before interpolation: selection shape: {selection.shape}, selection_mask shape: {selection_mask.shape}")
         
 
-        # scale the selection based on scale_factor
-        selection = F.interpolate(selection, scale_factor=scale_factor, mode='bilinear', align_corners=False)
-        selection_mask = F.interpolate(selection_mask, scale_factor=scale_factor, mode='nearest')
-        print(f"after interpolation: selection shape: {selection.shape}, selection_mask shape: {selection_mask.shape}")
+        # if scale_factor is not just 1, scale the selection based on scale_factor
+        if scale_factor != 1.0:
+            selection = F.interpolate(selection, scale_factor=scale_factor, mode='bilinear', align_corners=True)
+            selection_mask = F.interpolate(selection_mask, scale_factor=scale_factor, mode='nearest')
+            print(f"after interpolation: selection shape: {selection.shape}, selection_mask shape: {selection_mask.shape}")
 
         # finally, you guessed it, shuffle back to (B, H, W, C) for the image and (H, W) for the mask
         selection = selection.permute(0, 2, 3, 1)
