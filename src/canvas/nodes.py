@@ -137,7 +137,7 @@ class CanvasLoader:
 
     def __init__(self):
         self.GENERATION_SEED = 0
-        self.prev_use_existing = False
+        self.prev_use_canvas = False
         self.prev_image_width = 1024
         self.prev_image_height = 1024
         self.prev_fill_img_with = "white"
@@ -146,10 +146,17 @@ class CanvasLoader:
     def INPUT_TYPES(s):
         return {
             "required": {
-                "use_existing": (
+                "use_canvas": (
                     "BOOLEAN",
                     {
-                        "tooltip": "Use an existing image",
+                        "tooltip": "Use an existing image as a canvas.",
+                        "default": False,
+                    },
+                ),
+                "update_canvas": (
+                    "BOOLEAN",
+                    {
+                        "tooltip": "Replace the current canvas with the most recently generated image.",
                         "default": False,
                     },
                 ),
@@ -183,15 +190,22 @@ class CanvasLoader:
         }
 
     
-    def execute(self, use_existing, image_width, image_height, fill_img_with):
+    def execute(self, use_canvas, update_canvas, image_width, image_height, fill_img_with):
         if not os.path.exists(CACHE_PATH):
             os.makedirs(CACHE_PATH)
         cached_image_path = os.path.join(CACHE_PATH, f"{PREV_GENERATED_IMAGE}_1.png")
+        canvas_path = os.path.join(CACHE_PATH, f"canvas.png")
 
-        if use_existing:
+        if update_canvas:
             if os.path.exists(cached_image_path):
+                # open image as a PIL Image object and write the image to canvas_path
+                image = Image.open(cached_image_path)
+                image.save(canvas_path, "PNG")
+
+        if use_canvas:            
+            if os.path.exists(canvas_path):
                 # open image as a PIL Image object and convert it to a PyTorch tensor
-                image = Image.open(cached_image_path).convert("RGB")
+                image = Image.open(canvas_path).convert("RGB")
                 image = torch.from_numpy(np.array(image)).float() / 255.0
                 image = image.unsqueeze(0)
         else:
@@ -204,7 +218,7 @@ class CanvasLoader:
             elif fill_img_with == "random":
                 image = torch.rand((1, image_height, image_width, 3))
 
-        self.prev_use_existing = use_existing
+        self.prev_use_canvas = use_canvas
         self.prev_image_width = image_width
         self.prev_image_height = image_height
         self.prev_fill_img_with = fill_img_with
@@ -212,16 +226,24 @@ class CanvasLoader:
         return (image,)
     
     @classmethod
-    def IS_CHANGED(s, use_existing, image_width, image_height, fill_img_with):
+    def IS_CHANGED(cls, use_canvas, image_width, image_height, fill_img_with):
         # generate a hash of the image contents of prev_generated_image_1.png
         cached_image_path = os.path.join(CACHE_PATH, f"{PREV_GENERATED_IMAGE}_1.png")
-        if os.path.exists(cached_image_path):
-            with open(cached_image_path, "rb") as f:
-                image_hash = hashlib.sha256(f.read()).hexdigest()
+        canvas_path = os.path.join(CACHE_PATH, "canvas.png")
+        if use_canvas:
+            if os.path.exists(canvas_path):
+                with open(canvas_path, "rb") as f:
+                    image_hash = hashlib.sha256(f.read()).hexdigest()
+            else:
+                image_hash = None
         else:
-            image_hash = None
+            if os.path.exists(cached_image_path):
+                with open(cached_image_path, "rb") as f:
+                    image_hash = hashlib.sha256(f.read()).hexdigest()
+            else:
+                image_hash = None
 
-        prev_params = (image_hash, use_existing, image_width, image_height, fill_img_with)
+        prev_params = (image_hash, use_canvas, image_width, image_height, fill_img_with)
         return prev_params
     
     

@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "canvas"
 version = "0.0.1"
 description = "Nodes for incrementally constructing large, multifaceted images"
+repository = "https://github.com/leocbehe/canvas"
 authors = [
   {name = "Leo Behe", email = "leobehe@gmail.com"}
 ]
@@ -29,13 +30,15 @@ dev = [
 ]
 
 [project.urls]
+Repository = "https://github.com/leocbehe/canvas"
 bugs = "https://github.com/leocbehe/canvas/issues"
 homepage = "https://github.com/leocbehe/canvas"
 
 
 [tool.comfy]
-PublisherId = "leocbehe"
+PublisherId = "pone"
 DisplayName = "Canvas"
+repository = "https://github.com/leocbehe/canvas"
 Icon = ""
 
 
