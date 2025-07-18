@@ -226,7 +226,7 @@ class CanvasLoader:
         return (image,)
     
     @classmethod
-    def IS_CHANGED(cls, use_canvas, image_width, image_height, fill_img_with):
+    def IS_CHANGED(cls, use_canvas, update_canvas, image_width, image_height, fill_img_with):
         # generate a hash of the image contents of prev_generated_image_1.png
         cached_image_path = os.path.join(CACHE_PATH, f"{PREV_GENERATED_IMAGE}_1.png")
         canvas_path = os.path.join(CACHE_PATH, "canvas.png")
@@ -243,7 +243,7 @@ class CanvasLoader:
             else:
                 image_hash = None
 
-        prev_params = (image_hash, use_canvas, image_width, image_height, fill_img_with)
+        prev_params = (image_hash, use_canvas, update_canvas, image_width, image_height, fill_img_with)
         return prev_params
     
     
@@ -367,7 +367,7 @@ class CanvasSelector:
     CATEGORY = "CanvasNodes"
     FUNCTION = "execute"
 
-    def execute(self, scale_factor, pixel_padding,input_canvas_image: torch.Tensor, selector_mask: torch.Tensor):
+    def execute(self, scale_factor, pixel_padding, input_canvas_image: torch.Tensor, selector_mask: torch.Tensor):
         # input_canvas_image is (B, H, W, C), selector_mask is either (H, W) or (B, H, W)
         print(f"input_canvas_image shape: {input_canvas_image.shape}, selector_mask shape: {selector_mask.shape}")
 
@@ -382,6 +382,7 @@ class CanvasSelector:
             ymax = selector_mask.shape[1]
             xmax = selector_mask.shape[2]
         else:
+            # if we hit this point, we have a non-empty mask; create the bounding box for the nonzero pixels
             # Extract min/max row and column indices
             ymin = torch.min(nonzero[1])  # Corrected: Use nonzero[1] for height (row)
             ymax = torch.max(nonzero[1])  # Corrected: Use nonzero[1] for height (row)
@@ -390,20 +391,33 @@ class CanvasSelector:
 
         print(f"bbox top left is ({xmin}, {ymin}) and bottom right is ({xmax}, {ymax})")
 
+        # padding values, i.e. top_pad, left_pad, bottom_pad, and right_pad, are RANGES. They're the number of pixels to add on each side of the bounding box.
         # if necessary, shrink the padding for each side to make sure it doesn't go out of bounds
         top_pad = pixel_padding if ymin - pixel_padding >= 0 else ymin
         left_pad = pixel_padding if xmin - pixel_padding >= 0 else xmin
         bottom_pad = pixel_padding if ymax + pixel_padding <= input_canvas_image.shape[1] else input_canvas_image.shape[1] - ymax
         right_pad = pixel_padding if xmax + pixel_padding <= input_canvas_image.shape[2] else input_canvas_image.shape[2] - xmax
 
+        # padded values, i.e. xmin_padded, ymin_padded, xmax_padded, and ymax_padded, are POINTS. They're the coordinates of the top left and bottom right corners of the padded bounding box
         xmin_padded = xmin - left_pad
         ymin_padded = ymin - top_pad
         xmax_padded = xmax + right_pad
         ymax_padded = ymax + bottom_pad
+
+        # ComfyUI appears to restrict the possible sizes of latent images to multiples of 8. Because of this, we need to calculate the height and width of the selection,
+        # then cut off the remainder for each side to make sure it's a multiple of 8, otherwise, seams will appear when the selection is merged with the canvas.
+        selection_height = (ymax_padded - ymin_padded) // 8 * 8
+        selection_width = (xmax_padded - xmin_padded) // 8 * 8
+
+        # create the new bounding box point based on the selection_height and selection_width which are multiples of 8
+        ymin = ymin_padded
+        xmin = xmin_padded
+        ymax = ymin_padded + selection_height
+        xmax = xmin_padded + selection_width
         
         # extract the selection from the image
-        selection = input_canvas_image[0, (ymin-top_pad):(ymax+bottom_pad), (xmin-left_pad):(xmax+right_pad), :] 
-        selection_mask = selector_mask[0, (ymin-top_pad):(ymax+bottom_pad), (xmin-left_pad):(xmax+right_pad)]
+        selection = input_canvas_image[0, ymin:ymax, xmin:xmax, :] 
+        selection_mask = selector_mask[0, ymin:ymax, xmin:xmax]
 
         # the selection and selection_mask should now have the shapes (H, W, C) and (H, W) respectively
         print(f"selection shape: {selection.shape}, selection_mask shape: {selection_mask.shape}")
@@ -427,7 +441,9 @@ class CanvasSelector:
         selection = selection.permute(0, 2, 3, 1)
         selection_mask = selection_mask.squeeze(0)
         print(f"returning selection shape: {selection.shape}, selection_mask shape: {selection_mask.shape}")
-        return (selection,selection_mask,(input_canvas_image, {"top_left": (xmin_padded, ymin_padded), "bottom_right": (xmax_padded, ymax_padded)}))
+
+        # context format is (image, bbox_dict, scale_factor)
+        return (selection,selection_mask,(input_canvas_image, {"top_left": (xmin, ymin), "bottom_right": (xmax, ymax)}, scale_factor))
     
 class CanvasMerger:
     def __init__(self):
@@ -457,7 +473,8 @@ class CanvasMerger:
     def execute(self, canvas_selection: torch.Tensor, canvas_context):
         # canvas_context is a tuple that contains the canvas image as the first element and a dictionary containing the top_left and bottom_right coordinates as the second element
         # unpack canvas_context
-        canvas_image, bbox_dict = canvas_context
+        canvas_image, bbox_dict, scale_factor = canvas_context
+
         top_left_x, top_left_y = bbox_dict["top_left"]
         bottom_right_x, bottom_right_y = bbox_dict["bottom_right"]
 
@@ -465,15 +482,17 @@ class CanvasMerger:
         width = bottom_right_x - top_left_x
         height = bottom_right_y - top_left_y
 
-        # define the transform for the resizing of the selection
-        resize_transform = transforms.Resize((height, width), interpolation=transforms.InterpolationMode.BILINEAR)
-
         # transform the selection shape from (B, H, W, C) to (B, C, H, W)
         canvas_selection = canvas_selection.permute(0, 3, 1, 2)
 
-        # resize the selection
-        print(f"resizing selection to {height}x{width}")
-        canvas_selection = resize_transform(canvas_selection)
+        print(f"selection shape: {canvas_selection.shape}")
+        print(f"scale factor: {scale_factor}")
+        # if the image has been scaled, define the transform for the resizing of the selection then resize the selection
+        if scale_factor < 0.99 or scale_factor > 1.01:
+            print(f"resizing selection to {height}x{width}")
+            resize_transform = transforms.Resize((height, width), interpolation=transforms.InterpolationMode.BILINEAR)
+            canvas_selection = resize_transform(canvas_selection)
+        print(f"selection shape: {canvas_selection.shape}")
 
         # transform selection shape back to (B, H, W, C)
         canvas_selection = canvas_selection.permute(0, 2, 3, 1)
