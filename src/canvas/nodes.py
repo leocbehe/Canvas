@@ -89,7 +89,7 @@ class CanvasLoader:
                 image = torch.from_numpy(np.array(image)).float() / 255.0
                 image = image.unsqueeze(0)
         else:
-            image = torch.Tensor(torch.empty((1, image_height, image_width, 3), dtype=torch.float16))
+            image = torch.Tensor(torch.empty((1, image_height, image_width, 3), dtype=torch.float32))
             # fill image with the specified value
             if fill_img_with == "white":
                 image.fill_(1.0)
@@ -107,22 +107,7 @@ class CanvasLoader:
     
     @classmethod
     def IS_CHANGED(cls, use_canvas, update_canvas, image_width, image_height, fill_img_with):
-        # generate a hash of the image contents of prev_generated_image_1.png
-        cached_image_path = os.path.join(CACHE_PATH, f"{PREV_GENERATED_IMAGE}_1.png")
-        canvas_path = os.path.join(CACHE_PATH, "canvas.png")
-        image_hash = None
-        if use_canvas:
-            if os.path.exists(canvas_path):
-                with open(canvas_path, "rb") as f:
-                    image_hash = hashlib.sha256(f.read()).hexdigest()
-        
-        if update_canvas:
-            if os.path.exists(cached_image_path):
-                with open(cached_image_path, "rb") as f:
-                    image_hash = hashlib.sha256(f.read()).hexdigest()
-
-        prev_params = (image_hash, use_canvas, update_canvas, image_width, image_height, fill_img_with)
-        return prev_params
+        return np.random.rand()
     
     
     RETURN_TYPES = ("IMAGE",)
@@ -245,6 +230,14 @@ class CanvasSelector:
     CATEGORY = "CanvasNodes"
     FUNCTION = "execute"
 
+    def adjust_scale(self, scale_factor, height, width):
+        print(f"scale_factor: {scale_factor}, height: {height}, width: {width}")
+        # after scaling, select the closest multiple of 8 that is smaller than or equal to the raw scaled height and width
+        scaled_height = int(height * scale_factor) // 8 * 8
+        scaled_width = int(width * scale_factor) // 8 * 8
+        
+        return (scaled_height, scaled_width)
+
     def execute(self, scale_factor, pixel_padding, input_canvas_image: torch.Tensor, selector_mask: torch.Tensor):
         # input_canvas_image is (B, H, W, C), selector_mask is either (H, W) or (B, H, W)
         print(f"input_canvas_image shape: {input_canvas_image.shape}, selector_mask shape: {selector_mask.shape}")
@@ -262,19 +255,22 @@ class CanvasSelector:
         else:
             # if we hit this point, we have a non-empty mask; create the bounding box for the nonzero pixels
             # Extract min/max row and column indices
-            ymin = torch.min(nonzero[1])  # Corrected: Use nonzero[1] for height (row)
-            ymax = torch.max(nonzero[1])  # Corrected: Use nonzero[1] for height (row)
-            xmin = torch.min(nonzero[2])  # Corrected: Use nonzero[2] for width (column)
-            xmax = torch.max(nonzero[2])  # Corrected: Use nonzero[2] for width (column)
+        
+            # ComfyUI appears to restrict the possible sizes of latent images to multiples of 8. Because of this, we need to ensure that
+            # our calculations are done with multiples of 8.
+            ymin = (torch.min(nonzero[1]) ) // 8 * 8
+            ymax = (torch.max(nonzero[1]) ) // 8 * 8
+            xmin = (torch.min(nonzero[2]) ) // 8 * 8
+            xmax = (torch.max(nonzero[2]) ) // 8 * 8
 
         print(f"bbox top left is ({xmin}, {ymin}) and bottom right is ({xmax}, {ymax})")
 
         # padding values, i.e. top_pad, left_pad, bottom_pad, and right_pad, are RANGES. They're the number of pixels to add on each side of the bounding box.
         # if necessary, shrink the padding for each side to make sure it doesn't go out of bounds
-        top_pad = pixel_padding if ymin - pixel_padding >= 0 else ymin
-        left_pad = pixel_padding if xmin - pixel_padding >= 0 else xmin
-        bottom_pad = pixel_padding if ymax + pixel_padding <= input_canvas_image.shape[1] else input_canvas_image.shape[1] - ymax
-        right_pad = pixel_padding if xmax + pixel_padding <= input_canvas_image.shape[2] else input_canvas_image.shape[2] - xmax
+        top_pad = (pixel_padding if ymin - pixel_padding >= 0 else ymin) // 8 * 8
+        left_pad = (pixel_padding if xmin - pixel_padding >= 0 else xmin) // 8 * 8
+        bottom_pad = (pixel_padding if ymax + pixel_padding <= input_canvas_image.shape[1] else input_canvas_image.shape[1] - ymax) // 8 * 8
+        right_pad = (pixel_padding if xmax + pixel_padding <= input_canvas_image.shape[2] else input_canvas_image.shape[2] - xmax) // 8 * 8
 
         # padded values, i.e. xmin_padded, ymin_padded, xmax_padded, and ymax_padded, are POINTS. They're the coordinates of the top left and bottom right corners of the padded bounding box
         xmin_padded = xmin - left_pad
@@ -282,10 +278,8 @@ class CanvasSelector:
         xmax_padded = xmax + right_pad
         ymax_padded = ymax + bottom_pad
 
-        # ComfyUI appears to restrict the possible sizes of latent images to multiples of 8. Because of this, we need to calculate the height and width of the selection,
-        # then cut off the remainder for each side to make sure it's a multiple of 8, otherwise, seams will appear when the selection is merged with the canvas.
-        selection_height = (ymax_padded - ymin_padded) // 8 * 8
-        selection_width = (xmax_padded - xmin_padded) // 8 * 8
+        selection_height = (ymax_padded - ymin_padded)
+        selection_width = (xmax_padded - xmin_padded)
 
         # create the new bounding box point based on the selection_height and selection_width which are multiples of 8
         ymin = ymin_padded
@@ -297,22 +291,24 @@ class CanvasSelector:
         selection = input_canvas_image[0, ymin:ymax, xmin:xmax, :] 
         selection_mask = selector_mask[0, ymin:ymax, xmin:xmax]
 
-        # the selection and selection_mask should now have the shapes (H, W, C) and (H, W) respectively
-        print(f"selection shape: {selection.shape}, selection_mask shape: {selection_mask.shape}")
-
         # interpolate function requires input to be (B, C, H, W), so we rearrange the tensors A G A I N
         selection = selection.permute(2, 0, 1)
         selection = selection.unsqueeze(0)
         selection_mask = selection_mask.unsqueeze(0).unsqueeze(0)
 
+        # if scale_factor is not just 1, scale the selection based on scale_factor
+        # we want to remove any floating point inaccuracies, as they lead to noticeable seams. Therefore, we cut off any
+        # decimals beyond 10^-2.
+        scale_factor = int(scale_factor * 100) / 100
+
         # the selection and selection_mask should now have the shapes (1, C, H, W) and (1, 1, H, W) respectively
         print(f"before interpolation: selection shape: {selection.shape}, selection_mask shape: {selection_mask.shape}")
-        
 
-        # if scale_factor is not just 1, scale the selection based on scale_factor
+        scaled_height, scaled_width = self.adjust_scale(scale_factor, selection.shape[2], selection.shape[3])
         if scale_factor != 1.0:
-            selection = F.interpolate(selection, scale_factor=scale_factor, mode='bilinear', align_corners=True)
-            selection_mask = F.interpolate(selection_mask, scale_factor=scale_factor, mode='nearest')
+            scale_transform = transforms.Resize((scaled_height, scaled_width), interpolation=transforms.InterpolationMode.BILINEAR)
+            selection = scale_transform(selection)
+            selection_mask = scale_transform(selection_mask)
             print(f"after interpolation: selection shape: {selection.shape}, selection_mask shape: {selection_mask.shape}")
 
         # finally, you guessed it, shuffle back to (B, H, W, C) for the image and (H, W) for the mask
@@ -320,8 +316,13 @@ class CanvasSelector:
         selection_mask = selection_mask.squeeze(0)
         print(f"returning selection shape: {selection.shape}, selection_mask shape: {selection_mask.shape}")
 
-        # context format is (image, bbox_dict, scale_factor)
-        return (selection,selection_mask,(input_canvas_image, {"top_left": (xmin, ymin), "bottom_right": (xmax, ymax)}, scale_factor))
+        # context format is (image, mask, bbox_dict, original_height, original_width)
+        return (selection, selection_mask, (input_canvas_image, {
+                "top_left": (xmin, ymin), 
+                "bottom_right": (xmax, ymax), 
+                "scale_factor": scale_factor
+            }
+        ))
     
 class CanvasMerger:
     def __init__(self):
@@ -351,7 +352,9 @@ class CanvasMerger:
     def execute(self, canvas_selection: torch.Tensor, canvas_context):
         # canvas_context is a tuple that contains the canvas image as the first element and a dictionary containing the top_left and bottom_right coordinates as the second element
         # unpack canvas_context
-        canvas_image, bbox_dict, scale_factor = canvas_context
+        canvas_image, bbox_dict = canvas_context
+        scale_factor = float(bbox_dict["scale_factor"])
+        print(f"scale factor for merging: {scale_factor}")
 
         top_left_x, top_left_y = bbox_dict["top_left"]
         bottom_right_x, bottom_right_y = bbox_dict["bottom_right"]
@@ -364,7 +367,6 @@ class CanvasMerger:
         canvas_selection = canvas_selection.permute(0, 3, 1, 2)
 
         print(f"selection shape: {canvas_selection.shape}")
-        print(f"scale factor: {scale_factor}")
         # if the image has been scaled, define the transform for the resizing of the selection then resize the selection
         if scale_factor < 0.99 or scale_factor > 1.01:
             print(f"resizing selection to {height}x{width}")
@@ -393,86 +395,68 @@ class CanvasTransform:
                     "IMAGE", 
                     {},
                 ),
-                "crop_t": (
-                    "INT",
+                "operation": (
+                    ["crop", "grow"],
                     {
-                        "default": 0,
-                        "min": 0,
-                        "max": 4096,
-                        "step": 8,
-                        "tooltip": "Number of pixels to crop from the top of the canvas",
+                        "default": "crop",
                     },
                 ),
-                "crop_b": (
-                    "INT",
+                "grow_mode": (
+                    ["constant", "reflect", "replicate", "circular"],
                     {
-                        "default": 0,
-                        "min": 0,
-                        "max": 4096,
-                        "step": 8,
-                        "tooltip": "Number of pixels to crop from the bottom of the canvas",
+                        "default": "constant",
                     },
                 ),
-                "crop_l": (
-                    "INT",
+                "grow_fill_value": (
+                    "FLOAT",
                     {
-                        "default": 0,
-                        "min": 0,
-                        "max": 4096,
-                        "step": 8,
-                        "tooltip": "Number of pixels to crop from the left of the canvas",
+                        "default": 0.0,
+                        "min": 0.0,
+                        "max": 1.0,
+                        "step": 0.01,
+                        "tooltip": "Value to fill new pixels with if grow_mode is 'constant'",
                     },
                 ),
-                "crop_r": (
+                "margin_t": (
                     "INT",
                     {
                         "default": 0,
                         "min": 0,
                         "max": 4096,
                         "step": 8,
-                        "tooltip": "Number of pixels to crop from the right of the canvas",
+                        "tooltip": "Number of pixels to crop/grow from the top of the canvas",
                     },
                 ),
-                "grow_t": (
+                "margin_b": (
                     "INT",
                     {
                         "default": 0,
                         "min": 0,
                         "max": 4096,
                         "step": 8,
-                        "tooltip": "Number of pixels to add to the top of the canvas",
+                        "tooltip": "Number of pixels to crop/grow from the bottom of the canvas",
                     },
                 ),
-                "grow_b": (
+                "margin_l": (
                     "INT",
                     {
                         "default": 0,
                         "min": 0,
                         "max": 4096,
                         "step": 8,
-                        "tooltip": "Number of pixels to add to the bottom of the canvas",
+                        "tooltip": "Number of pixels to crop/grow from the left of the canvas",
                     },
                 ),
-                "grow_l": (
+                "margin_r": (
                     "INT",
                     {
                         "default": 0,
                         "min": 0,
                         "max": 4096,
                         "step": 8,
-                        "tooltip": "Number of pixels to add to the left of the canvas",
+                        "tooltip": "Number of pixels to crop/grow from the right of the canvas",
                     },
                 ),
-                "grow_r": (
-                    "INT",
-                    {
-                        "default": 0,
-                        "min": 0,
-                        "max": 4096,
-                        "step": 8,
-                        "tooltip": "Number of pixels to add to the right of the canvas",
-                    },
-                )
             }
         }
 
@@ -482,18 +466,22 @@ class CanvasTransform:
     CATEGORY = "CanvasNodes"
     FUNCTION = "execute"
 
-    def execute(self, input_canvas_image, crop_t, crop_b, crop_l, crop_r, grow_t, grow_b, grow_l, grow_r):
+    def execute(self, input_canvas_image, grow_mode, grow_fill_value, operation, margin_t, margin_b, margin_l, margin_r):
 
-        if crop_t > 0 or crop_b > 0 or crop_l > 0 or crop_r > 0:
-            input_canvas_image = input_canvas_image[:, crop_t:input_canvas_image.shape[1]-crop_b, crop_l:input_canvas_image.shape[2]-crop_r, :]
+        if margin_t > 0 or margin_b > 0 or margin_l > 0 or margin_r > 0:
+            if operation == "crop":
+                input_canvas_image = input_canvas_image[:, margin_t:input_canvas_image.shape[1]-margin_b, margin_l:input_canvas_image.shape[2]-margin_r, :]
+            elif operation == "grow":
+                # shuffle dimensions for transformation, ofc
+                input_canvas_image = input_canvas_image.permute(0, 3, 1, 2)
+                # pad() only accepts the value kwarg if mode is 'constant'
+                if grow_mode == "constant":
+                    input_canvas_image = F.pad(input_canvas_image, (margin_l, margin_r, margin_t, margin_b), mode=grow_mode, value=grow_fill_value)
+                else:
+                    input_canvas_image = F.pad(input_canvas_image, (margin_l, margin_r, margin_t, margin_b), mode=grow_mode)
 
-        # shuffle dimensions for transformation, ofc
-        input_canvas_image = input_canvas_image.permute(0, 3, 1, 2)
-        if grow_t > 0 or grow_b > 0 or grow_l > 0 or grow_r > 0:
-            input_canvas_image = F.pad(input_canvas_image, (grow_l, grow_r, grow_t, grow_b), mode='constant', value=0)
-
-        # shuffle dimensions back
-        input_canvas_image = input_canvas_image.permute(0, 2, 3, 1)
+                # shuffle dimensions back
+                input_canvas_image = input_canvas_image.permute(0, 2, 3, 1)
 
         return (input_canvas_image,)
 
