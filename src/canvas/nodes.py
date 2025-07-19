@@ -110,18 +110,16 @@ class CanvasLoader:
         # generate a hash of the image contents of prev_generated_image_1.png
         cached_image_path = os.path.join(CACHE_PATH, f"{PREV_GENERATED_IMAGE}_1.png")
         canvas_path = os.path.join(CACHE_PATH, "canvas.png")
+        image_hash = None
         if use_canvas:
             if os.path.exists(canvas_path):
                 with open(canvas_path, "rb") as f:
                     image_hash = hashlib.sha256(f.read()).hexdigest()
-            else:
-                image_hash = None
-        else:
+        
+        if update_canvas:
             if os.path.exists(cached_image_path):
                 with open(cached_image_path, "rb") as f:
                     image_hash = hashlib.sha256(f.read()).hexdigest()
-            else:
-                image_hash = None
 
         prev_params = (image_hash, use_canvas, update_canvas, image_width, image_height, fill_img_with)
         return prev_params
@@ -383,15 +381,133 @@ class CanvasMerger:
         return (canvas_image,)
 
 
+class CanvasTransform:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "input_canvas_image": (
+                    "IMAGE", 
+                    {},
+                ),
+                "crop_t": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 4096,
+                        "step": 8,
+                        "tooltip": "Number of pixels to crop from the top of the canvas",
+                    },
+                ),
+                "crop_b": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 4096,
+                        "step": 8,
+                        "tooltip": "Number of pixels to crop from the bottom of the canvas",
+                    },
+                ),
+                "crop_l": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 4096,
+                        "step": 8,
+                        "tooltip": "Number of pixels to crop from the left of the canvas",
+                    },
+                ),
+                "crop_r": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 4096,
+                        "step": 8,
+                        "tooltip": "Number of pixels to crop from the right of the canvas",
+                    },
+                ),
+                "grow_t": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 4096,
+                        "step": 8,
+                        "tooltip": "Number of pixels to add to the top of the canvas",
+                    },
+                ),
+                "grow_b": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 4096,
+                        "step": 8,
+                        "tooltip": "Number of pixels to add to the bottom of the canvas",
+                    },
+                ),
+                "grow_l": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 4096,
+                        "step": 8,
+                        "tooltip": "Number of pixels to add to the left of the canvas",
+                    },
+                ),
+                "grow_r": (
+                    "INT",
+                    {
+                        "default": 0,
+                        "min": 0,
+                        "max": 4096,
+                        "step": 8,
+                        "tooltip": "Number of pixels to add to the right of the canvas",
+                    },
+                )
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("transformed_canvas",)
+    OUTPUT_NODE = True
+    CATEGORY = "CanvasNodes"
+    FUNCTION = "execute"
+
+    def execute(self, input_canvas_image, crop_t, crop_b, crop_l, crop_r, grow_t, grow_b, grow_l, grow_r):
+
+        if crop_t > 0 or crop_b > 0 or crop_l > 0 or crop_r > 0:
+            input_canvas_image = input_canvas_image[:, crop_t:input_canvas_image.shape[1]-crop_b, crop_l:input_canvas_image.shape[2]-crop_r, :]
+
+        # shuffle dimensions for transformation, ofc
+        input_canvas_image = input_canvas_image.permute(0, 3, 1, 2)
+        if grow_t > 0 or grow_b > 0 or grow_l > 0 or grow_r > 0:
+            input_canvas_image = F.pad(input_canvas_image, (grow_l, grow_r, grow_t, grow_b), mode='constant', value=0)
+
+        # shuffle dimensions back
+        input_canvas_image = input_canvas_image.permute(0, 2, 3, 1)
+
+        return (input_canvas_image,)
+
 # A dictionary that contains all nodes you want to export with their names
 # NOTE: names should be globally unique
 NODE_CLASS_MAPPINGS = {"CanvasLoader": CanvasLoader,
                        "CanvasCacheUpdater": CanvasCacheUpdater,
                        "CanvasSelector": CanvasSelector,
-                       "CanvasMerger": CanvasMerger}
+                       "CanvasMerger": CanvasMerger,
+                       "CanvasTransform": CanvasTransform}
 
 # A dictionary that contains the friendly/humanly readable titles for the nodes
 NODE_DISPLAY_NAME_MAPPINGS = {"CanvasLoader": "Canvas Loader",
                              "CanvasCacheUpdater": "Canvas Cache Updater",
                              "CanvasSelector": "Canvas Selector",
-                             "CanvasMerger": "Canvas Merger"}
+                             "CanvasMerger": "Canvas Merger",
+                             "CanvasTransform": "Canvas Transform"}
