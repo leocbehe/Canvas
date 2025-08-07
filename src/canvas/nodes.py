@@ -107,7 +107,17 @@ class CanvasLoader:
     
     @classmethod
     def IS_CHANGED(cls, use_canvas, update_canvas, image_width, image_height, fill_img_with):
-        return np.random.rand()
+        hash_func = hashlib.sha256()
+        hash_value = None
+
+        cached_image_path = os.path.join(CACHE_PATH, "canvas.png")
+        if os.path.exists(cached_image_path):
+            with open(cached_image_path, "rb") as f:
+                hash_func.update(f.read())
+                hash_value = hash_func.hexdigest()
+
+        print(f"use_canvas: {use_canvas}, update_canvas: {update_canvas}, image_width: {image_width}, image_height: {image_height}, fill_img_with: {fill_img_with}, hash_value: {hash_value}")
+        return (use_canvas, update_canvas, image_width, image_height, fill_img_with, hash_value)
     
     
     RETURN_TYPES = ("IMAGE",)
